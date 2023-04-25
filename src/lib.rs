@@ -54,6 +54,23 @@ type AudioSampleProducer =
 type AudioSampleConsumer =
     ringbuf::Consumer<f32, Arc<ringbuf::SharedRb<f32, Vec<std::mem::MaybeUninit<f32>>>>>;
 
+/// Config struct behavior of the [`Player`]
+pub struct PlayerConfig {
+    /// whether the video should repeat after ending
+    pub looping: bool,
+    /// whether to render video player controls or not
+    pub show_controls: bool,
+}
+
+impl Default for PlayerConfig {
+    fn default() -> Self {
+        PlayerConfig {
+            looping: true,
+            show_controls: true,
+        }
+    }
+}
+
 /// The [`Player`] processes and controls streams of video/audio. This is what you use to show a video file.
 /// Initialize once, and use the [`Player::ui`] or [`Player::ui_at()`] functions to show the playback.
 pub struct Player {
@@ -78,8 +95,8 @@ pub struct Player {
     audio_thread: Option<Guard>,
     frame_thread: Option<Guard>,
     ctx_ref: egui::Context,
-    /// Should the stream loop if it finishes?
-    pub looping: bool,
+    /// The configuration for playback / rendering
+    pub config: PlayerConfig,
     /// The volume of the audio stream.
     pub audio_volume: Cache<f32>,
     /// The maximum volume of the audio stream.
@@ -230,7 +247,7 @@ impl Player {
 
         match self.player_state.get_updated() {
             PlayerState::EndOfFile => {
-                if self.looping {
+                if self.config.looping {
                     reset_stream = true;
                 } else {
                     self.player_state.set(PlayerState::Stopped);
@@ -253,7 +270,9 @@ impl Player {
         self.process_state();
         let image = Image::new(self.texture_handle.id(), size).sense(Sense::click());
         let response = ui.add(image);
-        self.render_ui(ui, &response);
+        if self.config.show_controls {
+            self.render_ui(ui, &response);
+        }
         response
     }
 
@@ -262,7 +281,9 @@ impl Player {
         self.process_state();
         let image = Image::new(self.texture_handle.id(), rect.size()).sense(Sense::click());
         let response = ui.put(rect, image);
-        self.render_ui(ui, &response);
+        if self.config.show_controls {
+            self.render_ui(ui, &response);
+        }
         response
     }
 
@@ -532,11 +553,11 @@ impl Player {
 
     #[cfg(feature = "from_bytes")]
     /// Create a new [`Player`] from input bytes.
-    pub fn new_from_bytes(ctx: &egui::Context, input_bytes: &[u8]) -> Result<Self> {
+    pub fn new_from_bytes(ctx: &egui::Context, input_bytes: &[u8], config: PlayerConfig) -> Result<Self> {
         let mut file = tempfile::Builder::new().tempfile()?;
         file.write_all(input_bytes)?;
         let path = file.path();
-        let mut slf = Self::new(ctx, path)?;
+        let mut slf = Self::new(ctx, path, config)?;
         slf.temp_file = Some(file);
         Ok(slf)
     }
@@ -587,7 +608,7 @@ impl Player {
     }
 
     /// Create a new [`Player`].
-    pub fn new(ctx: &egui::Context, input_path: impl AsRef<Path>) -> Result<Self> {
+    pub fn new(ctx: &egui::Context, input_path: impl AsRef<Path>, config: PlayerConfig) -> Result<Self> {
         let input_context = input(&input_path)?;
         let video_stream = input_context
             .streams()
@@ -651,7 +672,7 @@ impl Player {
             duration_ms,
             audio_volume,
             max_audio_volume,
-            looping: true,
+            config,
             height,
             ctx_ref: ctx.clone(),
             #[cfg(feature = "from_bytes")]

@@ -1,7 +1,7 @@
 extern crate ffmpeg_next as ffmpeg;
 use eframe::NativeOptions;
 use egui::{CentralPanel, Grid, Sense, Slider, TextEdit, Window};
-use egui_video::{AudioDevice, Player};
+use egui_video::{AudioDevice, Player, PlayerConfig};
 fn main() {
     let _ = eframe::run_native(
         "app",
@@ -35,7 +35,7 @@ impl eframe::App for App {
             ui.horizontal(|ui| {
                 ui.add_enabled_ui(!self.media_path.is_empty(), |ui| {
                     if ui.button("load").clicked() {
-                        match Player::new(ctx, &self.media_path.replace("\"", ""))
+                        match Player::new(ctx, &self.media_path.replace("\"", "" ), PlayerConfig::default())
                             .and_then(|p| p.with_audio(&mut self.audio_device))
                         {
                             Ok(player) => {
@@ -97,7 +97,7 @@ impl eframe::App for App {
                     });
                 });
                 Window::new("controls").show(ctx, |ui| {
-                    ui.checkbox(&mut player.looping, "loop");
+                    ui.checkbox(&mut player.config.looping, "loop");
                     ui.horizontal(|ui| {
                         ui.label("size scale");
                         ui.add(Slider::new(&mut self.stream_size_scale, 0.0..=2.));
