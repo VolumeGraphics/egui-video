@@ -2,7 +2,14 @@
 //! egui-video
 //! video playback library for [`egui`]
 //!
+/// module for the caching arc mutex code
+pub mod cache;
+
 extern crate ffmpeg_next as ffmpeg;
+
+#[cfg(feature = "from_bytes")]
+use std::io::Write;
+
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use egui::epaint::Shadow;
@@ -27,7 +34,8 @@ use timer::{Guard, Timer};
 
 #[cfg(feature = "from_bytes")]
 use tempfile::NamedTempFile;
-use std::io::Write;
+use std::path::Path;
+use crate::cache::Cache;
 
 fn format_duration(dur: Duration) -> String {
     let dt = DateTime::<Utc>::from(UNIX_EPOCH) + dur;
@@ -122,58 +130,6 @@ pub struct AudioStreamer {
     audio_sample_producer: AudioSampleProducer,
     input_context: Input,
     player_state: Cache<PlayerState>,
-}
-
-#[derive(Clone)]
-/// Just `Arc<Mutex<T>>` with a local cache.
-pub struct Cache<T: Copy> {
-    cached_value: T,
-    override_value: Option<T>,
-    raw_value: Arc<Mutex<T>>,
-}
-
-impl<T: Copy> Cache<T> {
-    /// Set the value. Blocks the thread until it can aquire the mutex.
-    pub fn set(&mut self, value: T) {
-        self.cached_value = value;
-        *self.raw_value.lock() = value
-    }
-    /// Get the value.
-    /// Priority: Override value -> Try update attempt -> Cached value
-    pub fn get(&mut self) -> T {
-        self.override_value.unwrap_or(self.get_true())
-    }
-    /// Get the "true" value, ignoring override.
-    /// Priority: Try update attempt -> Cached value
-    pub fn get_true(&mut self) -> T {
-        self.try_update_cache().unwrap_or(self.cached_value)
-    }
-    /// Updates the cache. Blocks the thread until it can aquire the mutex.
-    pub fn update_cache(&mut self) {
-        self.cached_value = *self.raw_value.lock();
-    }
-    /// Get the updated value. Blocks the thread until it can aquire the mutex.
-    pub fn get_updated(&mut self) -> T {
-        self.update_cache();
-        self.cached_value
-    }
-    /// Attempt to update the cache by trying to lock the mutex. Returns the updated value as an [`Option`] if it succeeeds.
-    pub fn try_update_cache(&mut self) -> Option<T> {
-        if let Some(new_value) = self.raw_value.try_lock() {
-            self.cached_value = *new_value;
-            Some(self.cached_value)
-        } else {
-            None
-        }
-    }
-    /// Make a new cache.
-    pub fn new(value: T) -> Self {
-        Self {
-            override_value: None,
-            cached_value: value,
-            raw_value: Arc::new(Mutex::new(value)),
-        }
-    }
 }
 
 const AV_TIME_BASE_RATIONAL: Rational = Rational(1, AV_TIME_BASE);
@@ -631,7 +587,7 @@ impl Player {
     }
 
     /// Create a new [`Player`].
-    pub fn new(ctx: &egui::Context, input_path: &String) -> Result<Self> {
+    pub fn new(ctx: &egui::Context, input_path: impl AsRef<Path>) -> Result<Self> {
         let input_context = input(&input_path)?;
         let video_stream = input_context
             .streams()
@@ -676,7 +632,7 @@ impl Player {
         let texture_options = TextureOptions::LINEAR;
         let texture_handle = ctx.load_texture("vidstream", ColorImage::example(), texture_options);
         let mut streamer = Self {
-            input_path: input_path.clone(),
+            input_path: input_path.as_ref().to_string_lossy().into_owned(),
             audio_streamer: None,
             video_streamer: Arc::new(Mutex::new(stream_decoder)),
             texture_options,
