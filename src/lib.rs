@@ -34,7 +34,7 @@ use timer::{Guard, Timer};
 
 #[cfg(feature = "from_bytes")]
 use tempfile::NamedTempFile;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use crate::cache::Cache;
 
 fn format_duration(dur: Duration) -> String {
@@ -91,7 +91,7 @@ pub struct Player {
     temp_file: Option<NamedTempFile>,
     video_elapsed_ms: Cache<i64>,
     audio_elapsed_ms: Cache<i64>,
-    input_path: String,
+    input_path: PathBuf,
 }
 
 #[derive(PartialEq, Clone, Copy, Debug)]
@@ -535,8 +535,8 @@ impl Player {
     pub fn new_from_bytes(ctx: &egui::Context, input_bytes: &[u8]) -> Result<Self> {
         let mut file = tempfile::Builder::new().tempfile()?;
         file.write_all(input_bytes)?;
-        let path = file.path().to_string_lossy().to_string();
-        let mut slf = Self::new(ctx, &path)?;
+        let path = file.path();
+        let mut slf = Self::new(ctx, path)?;
         slf.temp_file = Some(file);
         Ok(slf)
     }
@@ -632,7 +632,7 @@ impl Player {
         let texture_options = TextureOptions::LINEAR;
         let texture_handle = ctx.load_texture("vidstream", ColorImage::example(), texture_options);
         let mut streamer = Self {
-            input_path: input_path.as_ref().to_string_lossy().into_owned(),
+            input_path: input_path.as_ref().to_path_buf(),
             audio_streamer: None,
             video_streamer: Arc::new(Mutex::new(stream_decoder)),
             texture_options,
