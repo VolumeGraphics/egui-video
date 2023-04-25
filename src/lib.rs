@@ -32,10 +32,10 @@ use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 use timer::{Guard, Timer};
 
+use crate::cache::Cache;
+use std::path::{Path, PathBuf};
 #[cfg(feature = "from_bytes")]
 use tempfile::NamedTempFile;
-use std::path::{Path, PathBuf};
-use crate::cache::Cache;
 
 fn format_duration(dur: Duration) -> String {
     let dt = DateTime::<Utc>::from(UNIX_EPOCH) + dur;
@@ -50,9 +50,9 @@ fn format_duration(dur: Duration) -> String {
 pub type AudioDevice = audio::AudioDevice<AudioDeviceCallback>;
 
 type AudioSampleProducer =
-    ringbuf::Producer<f32, Arc<ringbuf::SharedRb<f32, Vec<std::mem::MaybeUninit<f32>>>>>;
+    ringbuf::Producer<f32, Arc<SharedRb<f32, Vec<std::mem::MaybeUninit<f32>>>>>;
 type AudioSampleConsumer =
-    ringbuf::Consumer<f32, Arc<ringbuf::SharedRb<f32, Vec<std::mem::MaybeUninit<f32>>>>>;
+    ringbuf::Consumer<f32, Arc<SharedRb<f32, Vec<std::mem::MaybeUninit<f32>>>>>;
 
 /// Config struct behavior of the [`Player`]
 pub struct PlayerConfig {
@@ -195,7 +195,7 @@ impl Player {
     }
     fn spawn_timers(&mut self) {
         let mut texture_handle = self.texture_handle.clone();
-        let texture_options = self.texture_options.clone();
+        let texture_options = self.texture_options;
         let ctx = self.ctx_ref.clone();
         let stream_decoder = Arc::clone(&self.video_streamer);
         let wait_duration = Duration::milliseconds((1000. / self.framerate) as i64);
@@ -211,7 +211,7 @@ impl Player {
         self.frame_thread = Some(frame_timer_guard);
 
         if let Some(audio_decoder) = self.audio_streamer.as_ref() {
-            let audio_decoder = Arc::clone(&audio_decoder);
+            let audio_decoder = Arc::clone(audio_decoder);
             let audio_timer_guard =
                 self.audio_timer
                     .schedule_repeating(Duration::zero(), move || {
@@ -266,7 +266,7 @@ impl Player {
     }
 
     /// Draw the player's ui.
-    pub fn ui(&mut self, ui: &mut Ui, size: [f32; 2]) -> egui::Response {
+    pub fn ui(&mut self, ui: &mut Ui, size: [f32; 2]) -> Response {
         self.process_state();
         let image = Image::new(self.texture_handle.id(), size).sense(Sense::click());
         let response = ui.add(image);
@@ -277,7 +277,7 @@ impl Player {
     }
 
     /// Draw the player's ui with a specific rect.
-    pub fn ui_at(&mut self, ui: &mut Ui, rect: Rect) -> egui::Response {
+    pub fn ui_at(&mut self, ui: &mut Ui, rect: Rect) -> Response {
         self.process_state();
         let image = Image::new(self.texture_handle.id(), rect.size()).sense(Sense::click());
         let response = ui.put(rect, image);
@@ -404,8 +404,10 @@ impl Player {
             } else {
                 "🔇"
             };
-            let mut icon_font_id = FontId::default();
-            icon_font_id.size = 16.;
+            let icon_font_id = FontId {
+                size: 16.,
+                ..Default::default()
+            };
 
             let text_y_offset = -7.;
             let sound_icon_offset = vec2(-5., text_y_offset);
@@ -416,8 +418,10 @@ impl Player {
 
             let duration_text_offset = vec2(25., text_y_offset);
             let duration_text_pos = fullseekbar_rect.left_top() + duration_text_offset;
-            let mut duration_text_font_id = FontId::default();
-            duration_text_font_id.size = 14.;
+            let duration_text_font_id = FontId {
+                size: 14.,
+                ..Default::default()
+            };
 
             let mut shadow = Shadow::big_light();
             shadow.color = shadow.color.linear_multiply(seekbar_anim_frac);
@@ -467,7 +471,7 @@ impl Player {
                     sound_icon_pos,
                     Align2::RIGHT_BOTTOM,
                     sound_icon,
-                    icon_font_id.clone(),
+                    icon_font_id,
                     text_color,
                 );
 
@@ -553,7 +557,11 @@ impl Player {
 
     #[cfg(feature = "from_bytes")]
     /// Create a new [`Player`] from input bytes.
-    pub fn new_from_bytes(ctx: &egui::Context, input_bytes: &[u8], config: PlayerConfig) -> Result<Self> {
+    pub fn new_from_bytes(
+        ctx: &egui::Context,
+        input_bytes: &[u8],
+        config: PlayerConfig,
+    ) -> Result<Self> {
         let mut file = tempfile::Builder::new().tempfile()?;
         file.write_all(input_bytes)?;
         let path = file.path();
@@ -575,7 +583,7 @@ impl Player {
             let audio_sample_buffer =
                 SharedRb::<f32, Vec<_>>::new(audio_device.spec().size as usize);
             let (audio_sample_producer, audio_sample_consumer) = audio_sample_buffer.split();
-            let audio_resampler = ffmpeg::software::resampling::context::Context::get(
+            let audio_resampler = software::resampling::context::Context::get(
                 audio_decoder.format(),
                 audio_decoder.channel_layout(),
                 audio_decoder.rate(),
@@ -588,7 +596,7 @@ impl Player {
                 sample_consumer: audio_sample_consumer,
                 audio_volume: self.audio_volume.clone(),
             });
-            
+
             audio_device.resume();
             Some(AudioStreamer {
                 player_state: self.player_state.clone(),
@@ -608,7 +616,11 @@ impl Player {
     }
 
     /// Create a new [`Player`].
-    pub fn new(ctx: &egui::Context, input_path: impl AsRef<Path>, config: PlayerConfig) -> Result<Self> {
+    pub fn new(
+        ctx: &egui::Context,
+        input_path: impl AsRef<Path>,
+        config: PlayerConfig,
+    ) -> Result<Self> {
         let input_context = input(&input_path)?;
         let video_stream = input_context
             .streams()
@@ -735,31 +747,26 @@ pub trait Streamer {
             let target_ts = millisec_to_timestamp(target_ms, rescale::TIME_BASE);
             if let Err(e) = self.input_context().seek(target_ts, ..target_ts) {
                 dbg!(e);
-            } else {
-                if seek_frac >= 0.99 {
-                    // prevent inifinite loop near end of stream
-                    self.player_state().set(PlayerState::EndOfFile)
-                } else if seek_frac > 0. {
-                    // this drop frame loop lets us refresh until current_ts is accurate
-                    if !seeking_forward {
-                        while (self.elapsed_ms().get() as f64 / duration_ms as f64)
-                            > seek_frac as f64
-                        {
-                            self.drop_frames();
-                        }
-                    }
-
-                    // this drop frame loop drops frames until we are at desired
-                    while (self.elapsed_ms().get() as f64 / duration_ms as f64) < seek_frac as f64 {
+            } else if seek_frac >= 0.99 {
+                // prevent inifinite loop near end of stream
+                self.player_state().set(PlayerState::EndOfFile)
+            } else if seek_frac > 0. {
+                // this drop frame loop lets us refresh until current_ts is accurate
+                if !seeking_forward {
+                    while (self.elapsed_ms().get() as f64 / duration_ms as f64) > seek_frac as f64 {
                         self.drop_frames();
                     }
+                }
 
-                    // frame preview
-                    if seek_preview {
-                        match self.recieve_next_packet_until_frame() {
-                            Ok(frame) => apply_processed_frame(frame),
-                            _ => (),
-                        }
+                // this drop frame loop drops frames until we are at desired
+                while (self.elapsed_ms().get() as f64 / duration_ms as f64) < seek_frac as f64 {
+                    self.drop_frames();
+                }
+
+                // frame preview
+                if seek_preview {
+                    if let Ok(frame) = self.recieve_next_packet_until_frame() {
+                        apply_processed_frame(frame)
                     }
                 }
             };
@@ -773,7 +780,7 @@ pub trait Streamer {
     /// The streamer's decoder.
     fn decoder(&mut self) -> &mut ffmpeg::decoder::Opened;
     /// The streamer's input context.
-    fn input_context(&mut self) -> &mut ffmpeg::format::context::Input;
+    fn input_context(&mut self) -> &mut Input;
     /// The streamer's state.
     fn player_state(&mut self) -> &mut Cache<PlayerState>;
 
@@ -834,9 +841,7 @@ pub trait Streamer {
     fn recieve_next_frame(&mut self) -> Result<Self::ProcessedFrame> {
         match self.decode_frame() {
             Ok(decoded_frame) => self.process_frame(decoded_frame),
-            Err(e) => {
-                return Err(e.into());
-            }
+            Err(e) => Err(e),
         }
     }
 }
@@ -847,14 +852,14 @@ impl Streamer for VideoStreamer {
     fn stream_index(&self) -> usize {
         self.video_stream_index
     }
+    fn elapsed_ms(&mut self) -> &mut Cache<i64> {
+        &mut self.video_elapsed_ms
+    }
     fn decoder(&mut self) -> &mut ffmpeg::decoder::Opened {
         &mut self.video_decoder.0
     }
-    fn input_context(&mut self) -> &mut ffmpeg::format::context::Input {
+    fn input_context(&mut self) -> &mut Input {
         &mut self.input_context
-    }
-    fn elapsed_ms(&mut self) -> &mut Cache<i64> {
-        &mut self.video_elapsed_ms
     }
     fn player_state(&mut self) -> &mut Cache<PlayerState> {
         &mut self.player_state
@@ -879,14 +884,14 @@ impl Streamer for AudioStreamer {
     fn stream_index(&self) -> usize {
         self.audio_stream_index
     }
+    fn elapsed_ms(&mut self) -> &mut Cache<i64> {
+        &mut self.audio_elapsed_ms
+    }
     fn decoder(&mut self) -> &mut ffmpeg::decoder::Opened {
         &mut self.audio_decoder.0
     }
-    fn input_context(&mut self) -> &mut ffmpeg::format::context::Input {
+    fn input_context(&mut self) -> &mut Input {
         &mut self.input_context
-    }
-    fn elapsed_ms(&mut self) -> &mut Cache<i64> {
-        &mut self.audio_elapsed_ms
     }
     fn player_state(&mut self) -> &mut Cache<PlayerState> {
         &mut self.player_state
@@ -897,7 +902,7 @@ impl Streamer for AudioStreamer {
         Ok(decoded_frame)
     }
     fn process_frame(&mut self, frame: Self::Frame) -> Result<Self::ProcessedFrame> {
-        let mut resampled_frame = ffmpeg::frame::Audio::empty();
+        let mut resampled_frame = Audio::empty();
         self.resampler.run(&frame, &mut resampled_frame)?;
         let audio_samples = if resampled_frame.is_packed() {
             packed(&resampled_frame)
@@ -980,7 +985,7 @@ impl AudioDeviceCallback {
 #[inline]
 // Thanks https://github.com/zmwangx/rust-ffmpeg/issues/72 <3
 // Interpret the audio frame's data as packed (alternating channels, 12121212, as opposed to planar 11112222)
-fn packed<T: ffmpeg::frame::audio::Sample>(frame: &ffmpeg::frame::Audio) -> &[T] {
+fn packed<T: ffmpeg::frame::audio::Sample>(frame: &Audio) -> &[T] {
     if !frame.is_packed() {
         panic!("data is not packed");
     }
